@@ -14,6 +14,7 @@ on: pull_request
 permissions:
   contents: read
   pull-requests: write
+  id-token: write # lets dagsec confirm which repository is running
 jobs:
   dagsec:
     runs-on: ubuntu-latest

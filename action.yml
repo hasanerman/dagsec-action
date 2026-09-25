@@ -48,9 +48,17 @@ runs:
           exit 1
         fi
         echo "::add-mask::$DAGSEC_API_KEY"
+        # GitHub's signed token proves which repository is running and whether it is public.
+        # It exists only when the workflow grants `permissions: id-token: write`.
+        identity=""
+        if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+          identity=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=dagsec" | jq -r '.value // empty') || identity=""
+        fi
         bin="$RUNNER_TEMP/dagsec"
         code=$(curl -sS -o "$bin" -w '%{http_code}' \
           -H "Authorization: Bearer $DAGSEC_API_KEY" \
+          -H "X-GitHub-OIDC: $identity" \
           "$DAGSEC_SERVER/api/action/binary?repo=$GITHUB_REPOSITORY") || {
           echo "::error::Could not reach $DAGSEC_SERVER."
           exit 1
