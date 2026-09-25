@@ -1,0 +1,9 @@
+Copyright (c) 2026 dagsec. All rights reserved.
+
+This repository contains only the definition of the dagsec GitHub Action. You may
+reference it from your GitHub workflows (for example `uses: hasanerman/dagsec-action@v1`)
+to use the dagsec service under its terms.
+
+The dagsec scanner that this Action downloads is proprietary software. No license is
+granted to copy, modify, redistribute, reverse engineer or create derivative works of
+the scanner or of this repository beyond the use described above.

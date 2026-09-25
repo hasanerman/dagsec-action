@@ -1,0 +1,113 @@
+name: dagsec
+description: Flag leaked secrets and risky dependencies on every pull request
+author: dagsec
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  api-key:
+    description: Your dagsec API key (create one at https://app.dagsec.net/keys). Pass it from a secret.
+    required: true
+  fail-under:
+    description: Fail when a dependency's health score (0-100) is below this value
+    default: "40"
+  path:
+    description: Directory to scan
+    default: "."
+  comment:
+    description: Post the report as a pull request comment ("true" or "false")
+    default: "true"
+  github-token:
+    description: Token used to post the pull request comment
+    default: ${{ github.token }}
+  server:
+    description: dagsec server to download the scanner from
+    default: https://app.dagsec.net
+
+outputs:
+  exit-code:
+    description: 0 = passed, 1 = findings, 2 = scan error
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download dagsec
+      shell: bash
+      env:
+        DAGSEC_API_KEY: ${{ inputs.api-key }}
+        DAGSEC_SERVER: ${{ inputs.server }}
+      run: |
+        if [ "$RUNNER_OS" != "Linux" ] || [ "$RUNNER_ARCH" != "X64" ]; then
+          echo "::error::dagsec runs on Linux x64 runners. Use runs-on: ubuntu-latest."
+          exit 1
+        fi
+        if [ -z "$DAGSEC_API_KEY" ]; then
+          echo "::error::api-key is empty. Add a DAGSEC_API_KEY repository secret. Pull requests from forks don't receive secrets."
+          exit 1
+        fi
+        echo "::add-mask::$DAGSEC_API_KEY"
+        bin="$RUNNER_TEMP/dagsec"
+        code=$(curl -sS -o "$bin" -w '%{http_code}' \
+          -H "Authorization: Bearer $DAGSEC_API_KEY" \
+          "$DAGSEC_SERVER/api/action/binary?repo=$GITHUB_REPOSITORY") || {
+          echo "::error::Could not reach $DAGSEC_SERVER."
+          exit 1
+        }
+        if [ "$code" != "200" ]; then
+          reason=$(sed -n 's/.*"error":"\([^"]*\)".*/\1/p' "$bin" | head -c 300)
+          echo "::error::dagsec refused to run ($code): ${reason:-unknown error}"
+          exit 1
+        fi
+        chmod +x "$bin"
+        echo "DAGSEC_BIN=$bin" >> "$GITHUB_ENV"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        FAIL_UNDER: ${{ inputs.fail-under }}
+        SCAN_PATH: ${{ inputs.path }}
+      run: |
+        if [ "$(git -C "$SCAN_PATH" rev-parse --is-shallow-repository)" = "true" ]; then
+          echo "::warning::Shallow clone detected. Set 'fetch-depth: 0' on actions/checkout so dagsec can read git history."
+        fi
+        args=(scan "$SCAN_PATH" --fail-under "$FAIL_UNDER" --format markdown)
+        if [ -n "$BASE_SHA" ]; then
+          args+=(--since "$BASE_SHA")
+        fi
+        set +e
+        "$DAGSEC_BIN" "${args[@]}" > "$RUNNER_TEMP/dagsec-report.md"
+        status=$?
+        set -e
+        cat "$RUNNER_TEMP/dagsec-report.md" >> "$GITHUB_STEP_SUMMARY"
+        echo "exit-code=$status" >> "$GITHUB_OUTPUT"
+
+    - name: Comment on pull request
+      if: inputs.comment == 'true' && github.event_name == 'pull_request' && steps.scan.outputs.exit-code != '2'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        marker='<!-- dagsec-report -->'
+        body="$marker"$'\n'"$(cat "$RUNNER_TEMP/dagsec-report.md")"
+        existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1) || existing=""
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" > /dev/null \
+            || echo "::warning::Could not update the dagsec comment (does the job have pull-requests: write?)"
+        else
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" > /dev/null \
+            || echo "::warning::Could not post the dagsec comment (does the job have pull-requests: write?)"
+        fi
+
+    - name: Report result
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+      run: exit "$EXIT_CODE"
