@@ -79,11 +79,17 @@ runs:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         FAIL_UNDER: ${{ inputs.fail-under }}
         SCAN_PATH: ${{ inputs.path }}
+        DAGSEC_API_KEY: ${{ inputs.api-key }}
+        DAGSEC_SERVER: ${{ inputs.server }}
       run: |
         if [ "$(git -C "$SCAN_PATH" rev-parse --is-shallow-repository)" = "true" ]; then
           echo "::warning::Shallow clone detected. Set 'fetch-depth: 0' on actions/checkout so dagsec can read git history."
         fi
         args=(scan "$SCAN_PATH" --fail-under "$FAIL_UNDER" --format markdown)
+        # Sends only the result's counts, so the dashboard's Activity page lists this run.
+        if "$DAGSEC_BIN" scan --help | grep -q -- --report-to; then
+          args+=(--report-to "${DAGSEC_SERVER%/}/api/action/result")
+        fi
         if [ -n "$BASE_SHA" ]; then
           args+=(--since "$BASE_SHA")
         fi
